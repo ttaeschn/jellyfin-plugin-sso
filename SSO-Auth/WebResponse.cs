@@ -460,20 +460,39 @@ async function link(request) {
 }
 
 async function main() {
-    localStorage.removeItem('jellyfin_credentials');
-    document.getElementById('iframe-main').src = '" + punycodeBaseUrl + @"/web/index.html';
-
     var data = '" + data + @"';
-    while (localStorage.getItem(""_deviceId2"") == null ||
-        localStorage.getItem(""jellyfin_credentials"") == null ||
-        JSON.parse(localStorage.getItem(""jellyfin_credentials""))['Servers'][0]['Id'] == null) {
-        // If localStorage isn't initialized yet, try again.
-        await sleep(100);
+
+    // Detect Android WebView (Jellyfin mobile app)
+    var isMobileWebView = navigator.userAgent.toLowerCase().indexOf('android') !== -1 &&
+                          navigator.userAgent.toLowerCase().indexOf('wv') !== -1;
+
+    var deviceId, appName, appVersion, deviceName;
+
+    if (isMobileWebView) {
+        // Mobile WebView path: try native interface first, fallback to localStorage
+        var deviceInfo = (window.NativeInterface && window.NativeInterface.getDeviceInformation) ?
+            JSON.parse(window.NativeInterface.getDeviceInformation()) : null;
+
+        deviceId = deviceInfo ? deviceInfo.deviceId : localStorage.getItem(""_deviceId2"");
+        appName = deviceInfo ? deviceInfo.appName : ""Jellyfin Android"";
+        appVersion = deviceInfo ? deviceInfo.appVersion : ""0.0.0-dev.1"";
+        deviceName = deviceInfo ? deviceInfo.deviceName : getDeviceName();
+    } else {
+        // Desktop browser path: use iframe to get credentials from web app
+        localStorage.removeItem('jellyfin_credentials');
+        document.getElementById('iframe-main').src = '" + punycodeBaseUrl + @"/web/index.html';
+
+        while (localStorage.getItem(""_deviceId2"") == null ||
+            localStorage.getItem(""jellyfin_credentials"") == null ||
+            JSON.parse(localStorage.getItem(""jellyfin_credentials""))['Servers'][0]['Id'] == null) {
+            // If localStorage isn't initialized yet, try again.
+            await sleep(100);
+        }
+        deviceId = localStorage.getItem(""_deviceId2"");
+        appName = ""Jellyfin Web"";
+        appVersion = ""10.8.0"";
+        deviceName = getDeviceName();
     }
-    var deviceId = localStorage.getItem(""_deviceId2"");
-    var appName = ""Jellyfin Web"";
-    var appVersion = ""10.8.0"";
-    var deviceName = getDeviceName();
 
     var request = {deviceId, appName, appVersion, deviceName, data};
 
@@ -494,16 +513,56 @@ async function main() {
        };
        xhr.send(JSON.stringify(request));
     })
-    var responseJson = JSON.parse(response);
-    var userId = 'user-' + responseJson['User']['Id'] + '-' + responseJson['User']['ServerId'];
-    responseJson['User']['EnableAutoLogin'] = true;
-    localStorage.setItem(userId, JSON.stringify(responseJson['User']));
-    var jfCreds = JSON.parse(localStorage.getItem('jellyfin_credentials'));
-    jfCreds['Servers'][0]['AccessToken'] = responseJson['AccessToken'];
-    jfCreds['Servers'][0]['UserId'] = responseJson['User']['Id'];
-    localStorage.setItem('jellyfin_credentials', JSON.stringify(jfCreds));
-    localStorage.setItem('enableAutoLogin', 'true');
-    window.location.replace('" + punycodeBaseUrl + @"/web/index.html');
+     var responseJson = JSON.parse(response);
+     var userId = 'user-' + responseJson['User']['Id'] + '-' + responseJson['User']['ServerId'];
+     responseJson['User']['EnableAutoLogin'] = true;
+     localStorage.setItem(userId, JSON.stringify(responseJson['User']));
+
+     if (isMobileWebView) {
+         // For mobile: Create complete jellyfin_credentials structure
+         var serverId = responseJson['User']['ServerId'];
+         var jfCreds = {
+             'Servers': [{
+                 'Id': serverId,
+                 'AccessToken': responseJson['AccessToken'],
+                 'UserId': responseJson['User']['Id'],
+                 'ManualAddress': '" + punycodeBaseUrl + @"',
+                 'LocalAddress': '" + punycodeBaseUrl + @"',
+                 'Name': responseJson['User']['ServerName'] || 'Jellyfin Server',
+                 'LastConnectionMode': 0,
+                 'DateLastAccessed': Date.now()
+             }]
+         };
+         localStorage.setItem('jellyfin_credentials', JSON.stringify(jfCreds));
+
+         // Also set the individual server entry that the API client looks for
+         var serverKey = 'serverCredentials3';
+         var serverCreds = {};
+         serverCreds[serverId] = {
+             'Id': serverId,
+             'Url': '" + punycodeBaseUrl + @"',
+             'ManualAddress': '" + punycodeBaseUrl + @"',
+             'LocalAddress': '" + punycodeBaseUrl + @"',
+             'Name': responseJson['User']['ServerName'] || 'Jellyfin Server',
+             'AccessToken': responseJson['AccessToken'],
+             'UserId': responseJson['User']['Id'],
+             'DateLastAccessed': Date.now()
+         };
+         localStorage.setItem(serverKey, JSON.stringify(serverCreds));
+     } else {
+         // For desktop: Update existing jellyfin_credentials from iframe
+         var jfCreds = JSON.parse(localStorage.getItem('jellyfin_credentials'));
+         jfCreds['Servers'][0]['AccessToken'] = responseJson['AccessToken'];
+         jfCreds['Servers'][0]['UserId'] = responseJson['User']['Id'];
+         localStorage.setItem('jellyfin_credentials', JSON.stringify(jfCreds));
+     }
+
+     localStorage.setItem('enableAutoLogin', 'true');
+     console.log('Authentication successful, redirecting to home...');
+
+     // Redirect with server ID to ensure proper connection
+     var serverId = responseJson['User']['ServerId'];
+     window.location.replace('" + punycodeBaseUrl + @"/web/index.html#!/home.html?serverId=' + serverId);
 }
 
 document.addEventListener('DOMContentLoaded', function () {
